@@ -26,6 +26,7 @@ class GPSDataProcessor:
         self.prefilter_avg_vel_mult = 5.0  # If vel is bigger or smaller by this value then delete in prefilter
 
         self.df_original = None
+        self.df_original_vel = None
         self.df_prefiltered = None
         self.df_filtered = None
 
@@ -47,7 +48,6 @@ class GPSDataProcessor:
 
     # Calculate velocity between consecutive points and average velocity over segment length
     def df_append_calc_vel(self, df):
-        df = df.copy()
         df["Time_Diff"] = df["Datetime"].diff().dt.total_seconds()
         df["Easting_Diff"] = df["Easting"].diff()
         df["Northing_Diff"] = df["Northing"].diff()
@@ -80,7 +80,7 @@ class GPSDataProcessor:
     def filter_data(self, df):
         # ----------- Prefilter -----------
         self.df_prefiltered, self.outliers_dict["prefilter"] = self.prefilter_data(df.copy())
-        self.df_prefiltered = self.df_append_calc_vel(self.df_prefiltered)
+        self.df_prefiltered = self.df_append_calc_vel(self.df_prefiltered)  # Recalculate velocities
 
         # ----------- Filter -----------
         outlier_mask = (self.df_prefiltered["Velocity"] > self.vel_cutoff) & (self.df_prefiltered["Velocity"].shift(-1) > self.vel_cutoff)
@@ -91,7 +91,8 @@ class GPSDataProcessor:
 
     # Calculate statistics like total distance, average velocity, max velocity, etc., and add number of points
     def calculate_statistics(self, df):
-        df = self.df_append_calc_vel(df.copy())
+        if 'Velocity' not in df.columns:
+            df = self.df_append_calc_vel(df.copy())
 
         valid_velocities = df["Velocity"].dropna()
         valid_distances = df["Distance"].dropna()
@@ -131,7 +132,7 @@ class GPSDataProcessor:
         ax2.clear()
 
         # ------------ PLOT #1 Data with all Outliers ------------
-        ax1.plot(df["Easting"], df["Northing"], marker="o", linestyle="-", label=label)
+        ax1.plot(df["Easting"], df["Northing"], marker="o", linestyle="-", label=f"{label} (Total Points: {len(df)})")
 
         sizes = [30, 20, 10]
         colors_rgba = [(1, 0, 0, 1), (1, 0.5, 0, 1), (1, 1, 0, 1), (0, 0, 0, 1)]  # RGBA
@@ -146,7 +147,7 @@ class GPSDataProcessor:
         ax1.legend()
 
         # ------------ PLOT #2 Data Velocity with all Outliers ------------
-        ax2.plot(df["Easting"], df["Velocity"], "b-", label="Velocity")
+        ax2.plot(df["Easting"], df["Velocity"], "b-", label=f"Velocity (Total Points: {len(df)})")
 
         for idx, (outlier_type, outlier_df) in enumerate(self.outliers_dict.items()):
             if not outlier_df.empty:
@@ -160,19 +161,26 @@ class GPSDataProcessor:
         ax2.set_xlabel("Time")
         ax2.set_ylabel("Velocity (knots)")
         ax2.legend()
-        
         # ------------ Auto Zoom (Works on slider move and matplotlib window zoom) ------------
 
         def on_xlims_change(event_ax):
             x_min, x_max = event_ax.get_xlim()
             if event_ax == ax1:
-                northing_min = np.nanmin(df["Northing"][df["Easting"].between(x_min, x_max)])
-                northing_max = np.nanmax(df["Northing"][df["Easting"].between(x_min, x_max)])
-                ax1.set_ylim(northing_min, northing_max)
+                northing_filtered = df["Northing"][df["Easting"].between(x_min, x_max)]
+                if not northing_filtered.empty:
+                    northing_min = np.nanmin(northing_filtered)
+                    northing_max = np.nanmax(northing_filtered)
+                    ax1.set_ylim(northing_min, northing_max)
             elif event_ax == ax2:
-                velocity_min = np.nanmin(df["Velocity"][df["Easting"].between(x_min, x_max)])
-                velocity_max = np.nanmax(df["Velocity"][df["Easting"].between(x_min, x_max)])
-                ax2.set_ylim(velocity_min, velocity_max)
+                velocity_filtered = df["Velocity"][df["Easting"].between(x_min, x_max)]
+                if not velocity_filtered.empty:
+                    velocity_min = np.nanmin(velocity_filtered)
+                    velocity_max = np.nanmax(velocity_filtered)
+                    # Ensure y-limits are not identical to avoid singular transformation
+                    if velocity_min == velocity_max:
+                        velocity_min -= 1
+                        velocity_max += 1
+                    ax2.set_ylim(velocity_min, velocity_max)
 
         ax1.callbacks.connect('xlim_changed', on_xlims_change)
         ax2.callbacks.connect('xlim_changed', on_xlims_change)
@@ -184,6 +192,7 @@ class GPSDataProcessor:
     def process_data(self, df):
         # ------------- Filtering -------------
         self.df_original = df.copy()
+        self.df_original_vel = self.df_append_calc_vel(self.df_original.copy())
         self.df_filtered, self.outliers_dict = self.filter_data(self.df_original.copy())
 
         # ----------- Compare stats -----------
@@ -196,7 +205,7 @@ class GPSDataProcessor:
 
         def plot_all():
             nonlocal ax1, ax2, ax3, ax4
-            self.plot_data_and_vel(self.df_append_calc_vel(self.df_original), filename, "Original Data", ax1, ax2)
+            self.plot_data_and_vel(self.df_original_vel, filename, "Original Data", ax1, ax2)
             self.plot_data_and_vel(self.df_filtered, filename, "Filtered Data", ax3, ax4)
             
             if self.zoom_ax_x != (None, None):
@@ -213,7 +222,7 @@ class GPSDataProcessor:
         def on_slider_update(val):
             self.vel_cutoff_offset = slider.val
             self.vel_cutoff = self.avg_vel + self.vel_cutoff_offset
-            df_filtered, _ = self.filter_data(df)
+            df_filtered, _ = self.filter_data(self.df_original)
 
             # Store zoom positions
             self.zoom_ax_x = ax1.get_xlim()
@@ -241,27 +250,29 @@ class GPSDataProcessor:
             self.visualize_data(filename)
             
 
-            # Example of use
-            # df = rotate_coordinates(df, 90)
-
-
-            # points_per_segment=20
-            
             # import segment_filter
-            # segment_filter = SegmentFilter(df, points_per_segment=20)
+            # points_per_segment=20
+            # segment_filter = SegmentFilter(df, points_per_segment=points_per_segment)
             # segment_filter.calculate_best_fit()  # Calculate the best-fit lines
             # segment_filter.plot_offset_vs_outlier_percentage(min_offset=0, max_offset=2, step=0.1)
             # segment_filter.plot()
         
-
-
+        
             # TODO
             # self.save_data(df, self.path_out_debug, filename)
             # self.save_data(df, self.path_out_filtered, filename, columns)
 
     
 
-# Run the processing
 if __name__ == "__main__":
     processor = GPSDataProcessor(data_folder="./data", output_folder="./data_filtered", avg_vel_segment_len=20, vel_cutoff_offset=1)
+    
+    import cProfile, pstats
+    profiler = cProfile.Profile()
+    profiler.enable()
+    
     processor.process_files()
+    
+    profiler.disable()
+    stats = pstats.Stats(profiler).sort_stats('cumtime')
+    stats.print_stats(20)

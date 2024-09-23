@@ -95,10 +95,12 @@ class GPSDataProcessor:
 
         return self.df_filtered, self.outliers_dict
 
-    def calc_and_plot_outliers_vs_offset_graph(self, min_offset=-2.5, max_offset=0, step=0.02):
+    def calc_and_plot_outliers_vs_offset_graph(self, min_offset=-3, max_offset=-1.0, step=0.02):
         offset_list = np.arange(min_offset, max_offset + step, step)
         outlier_percentages = []
         derivative_outlier_percentages = []
+        
+        # Calculate outlier percentages
         for offset in offset_list:
             self.vel_cutoff = self.avg_vel + offset
             df_filtered, outliers_dict = self.filter_data(self.df_prefiltered.copy())
@@ -113,7 +115,7 @@ class GPSDataProcessor:
             derivative = (outlier_percentages[i] - outlier_percentages[i - 1]) / (offset_list[i] - offset_list[i - 1])
             derivative_outlier_percentages.append(derivative)
 
-        # Plotting offset vs outlier percentage and its derivative on different subplots
+        # Plotting offset vs outlier percentage and its derivative
         fig, axs = plt.subplots(2, figsize=(10, 8), sharex=True)
         axs[0].plot(offset_list, outlier_percentages, marker="o", color="b", label="Outlier Percentage")
         axs[0].set_xlabel("Offset")
@@ -122,26 +124,51 @@ class GPSDataProcessor:
         axs[0].grid(True)
         axs[0].legend()
 
-        axs[1].plot(offset_list[1:], derivative_outlier_percentages, marker="o", color="r", label="Derivative of Outlier Percentage")
+        axs[1].plot(offset_list[1:], derivative_outlier_percentages, marker="o", color="g", label="Derivative of Outlier Percentage")
         axs[1].set_xlabel("Offset")
         axs[1].set_ylabel("Derivative of Outlier Percentage")
         axs[1].set_title("Offset vs Derivative of Outlier Percentage")
         axs[1].grid(True)
         axs[1].legend()
+        
+        # Add slider for target percentage
+        ax_slider = plt.axes([0.2, 0.01, 0.6, 0.03])
+        slider = Slider(ax_slider, "Target Percentage", 0.0, 100.0, valinit=2.0)
 
-        # Calculate top 20%, 10%, 5% values and mean
-        top_20_percent_value = np.percentile(outlier_percentages, 80)
-        top_10_percent_value = np.percentile(outlier_percentages, 90)
-        top_5_percent_value = np.percentile(outlier_percentages, 95)
-        mean_value = np.mean(outlier_percentages)
+        # Initialize horizontal and vertical lines as None
+        hline_target = None
+        vline_target_0 = None
+        hline_derivative_0 = None
+        vline_target_1 = None
 
-        print(f"Top 20% Value: {top_20_percent_value}")
-        print(f"Top 10% Value: {top_10_percent_value}")
-        print(f"Top 5% Value: {top_5_percent_value}")
-        print(f"Mean Value: {mean_value}")
+        def update_plot(val):
+            nonlocal hline_target, vline_target_0, hline_derivative_0, vline_target_1
 
-        plt.tight_layout()
+            target_percentage = slider.val
+            offset_at_target_percentage = offset_list[np.abs(np.array(outlier_percentages) - target_percentage).argmin()]
+
+            # If the lines exist, remove them first
+            if hline_target is not None:
+                hline_target.remove()
+            if vline_target_0 is not None:
+                vline_target_0.remove()
+            if hline_derivative_0 is not None:
+                hline_derivative_0.remove()
+            if vline_target_1 is not None:
+                vline_target_1.remove()
+
+            # Redraw horizontal and vertical lines at new slider values
+            hline_target = axs[0].axhline(y=target_percentage, color='r', linestyle='--')
+            vline_target_0 = axs[0].axvline(x=offset_at_target_percentage, color='r', linestyle='--')
+            hline_derivative_0 = axs[1].axhline(y=0, color='r', linestyle='--')
+            vline_target_1 = axs[1].axvline(x=offset_at_target_percentage, color='r', linestyle='--')
+
+            fig.canvas.draw_idle()
+
+        slider.on_changed(update_plot)
+
         plt.show()
+
 
     def calculate_statistics(self, df):
         if "Velocity" not in df.columns:

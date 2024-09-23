@@ -99,6 +99,7 @@ class GPSDataProcessor:
         avg_vel = valid_velocities.mean()
         max_vel = valid_velocities.max()
         travel_heading = np.degrees(np.arctan2(df["Northing_Diff"].sum(), df["Easting_Diff"].sum()))
+        self.travel_heading = travel_heading
         total_time = df["Time_Diff"].sum()
         dist_over_time_knots = total_distance / total_time * 1.94384  # In knots
         num_points = len(df)
@@ -137,7 +138,7 @@ class GPSDataProcessor:
         for idx, (outlier_type, outlier_df) in enumerate(self.outliers_dict.items()):
             if not outlier_df.empty:
                 ax1.scatter(
-                    outlier_df["Easting"], outlier_df["Northing"], color=colors_rgba[idx], s=sizes[idx], label=f"{outlier_type} Outliers ({len(outlier_df)} points)", zorder=10
+                    outlier_df["Easting"], outlier_df["Northing"], marker="x", color=colors_rgba[idx], s=sizes[idx], label=f"{outlier_type} Outliers ({len(outlier_df)} points)", zorder=10
                 )
         ax1.set_title(f"Data - {filename}")
         ax1.set_xlabel("Easting")
@@ -150,7 +151,7 @@ class GPSDataProcessor:
         for idx, (outlier_type, outlier_df) in enumerate(self.outliers_dict.items()):
             if not outlier_df.empty:
                 ax2.scatter(
-                    outlier_df["Easting"], outlier_df["Velocity"], color=colors_rgba[idx], s=sizes[idx], label=f"{outlier_type} Outliers ({len(outlier_df)} points)", zorder=10
+                    outlier_df["Easting"], outlier_df["Velocity"], marker="x", color=colors_rgba[idx], s=sizes[idx], label=f"{outlier_type} Outliers ({len(outlier_df)} points)", zorder=10
                 )
 
         ax2.axhline(y=self.vel_cutoff, color="r", linestyle="--", label=f"Cutoff: {self.vel_cutoff:.2f} knots")
@@ -229,33 +230,6 @@ class GPSDataProcessor:
 
         plt.show()
 
-    def calculate_best_fit(self, df):
-        total_points = len(df)
-        cut_off = int(total_points * 0.1)  # 10% cutoff
-        df_trimmed = df.iloc[cut_off:total_points - cut_off]
-
-        easting = df_trimmed['Easting'].values.reshape(-1, 1)  # Reshaped for sklearn
-        northing = df_trimmed['Northing'].values
-
-        reg = LinearRegression().fit(easting, northing)
-        slope = reg.coef_[0]
-        intercept = reg.intercept_
-
-        plt.scatter(easting, northing, label="Trimmed Data Points", color="blue")
-        
-        easting_range = np.linspace(easting.min(), easting.max(), 100)
-        northing_fit = slope * easting_range + intercept
-        plt.plot(easting_range, northing_fit, label=f"Best Fit: y = {slope:.4f}x + {intercept:.4f}", color="red")
-
-        plt.xlabel('Easting')
-        plt.ylabel('Northing')
-        plt.title('Best Fit Line for Northing vs Easting')
-        plt.legend()
-        plt.show()
-
-        return slope, intercept
-
-
     # Main processing loop for all files
     def process_files(self):
         self.load_gps_data()
@@ -264,12 +238,18 @@ class GPSDataProcessor:
             print(f"\nWorking on a file:   {filename}")
 
             self.process_data(df)
-            self.visualize_data(filename)
+            # self.visualize_data(filename)
             
             
-            slope, intercept = self.calculate_best_fit(self.df_filtered)
-            print(f"Slope: {slope}")
-            print(f"Intercept: {intercept}")
+            import SegmentFilter
+            SegmentFilter.calculate_best_fit_by_points_with_slider(df[:100], points_per_segment=20)
+            
+                   
+            # heading = np.degrees(np.arctan(slope))
+            # print(f"Slope: {slope}")
+            # print(f"Intercept: {intercept}")
+            # print(f"Heading (deg): {heading}")
+            
             
             
 

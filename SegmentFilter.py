@@ -12,10 +12,13 @@ def calculate_best_fit_by_points_with_slider(df, points_per_segment=300, offset=
     fig, ax = plt.subplots(figsize=(10, 6))
     plt.subplots_adjust(bottom=0.25)  # Adjust layout to make space for the slider
 
-    # Create the initial plot without the offset
-    lines = []  # Store the lines for the best fit and dashed lines
-    def plot_lines(offset=offset):
-        ax.clear()  # Clear the plot for updates
+    # Store elements that need to be updated dynamically
+    lines = []
+    dashed_lines_upper = []
+    dashed_lines_lower = []
+    scatter_points = []
+
+    def initialize_plot():
         for i in range(num_segments):
             # Define the start and end indices for this segment
             start_index = i * points_per_segment
@@ -32,14 +35,31 @@ def calculate_best_fit_by_points_with_slider(df, points_per_segment=300, offset=
             slope = reg.coef_[0]
             intercept = reg.intercept_
 
-            # Plot the points in the segment
-            ax.scatter(easting, northing, alpha=0.6)
-
-            # Plot the line of best fit for the segment
+            # Store slope and intercept for later use
             easting_range = np.linspace(easting.min(), easting.max(), 100)
             northing_fit = slope * easting_range + intercept
-            line, = ax.plot(easting_range, northing_fit, color='blue')
 
+            # Plot the line of best fit for the segment
+            line, = ax.plot(easting_range, northing_fit, color='blue')
+            lines.append((line, slope, intercept, easting_range, northing_fit))
+
+            # Initialize empty dashed lines and points (to be updated dynamically)
+            dashed_upper, = ax.plot([], [], 'r--')
+            dashed_lower, = ax.plot([], [], 'r--')
+            dashed_lines_upper.append(dashed_upper)
+            dashed_lines_lower.append(dashed_lower)
+
+            # Plot the initial points
+            scatter = ax.scatter(df_segment['Easting'], df_segment['Northing'], alpha=0.6)
+            scatter_points.append(scatter)
+
+        # Set plot labels and title
+        ax.set_xlabel('Easting')
+        ax.set_ylabel('Northing')
+        ax.set_title(f'Best Fit Lines with Perpendicular Offsets ({points_per_segment} points each)')
+
+    def update_dashed_lines(offset):
+        for i, (line, slope, intercept, easting_range, northing_fit) in enumerate(lines):
             # Calculate the perpendicular offset points
             perpendicular_dx = 1 / np.sqrt(1 + slope**2)
             perpendicular_dy = slope / np.sqrt(1 + slope**2)
@@ -50,38 +70,30 @@ def calculate_best_fit_by_points_with_slider(df, points_per_segment=300, offset=
             offset_easting_minus = easting_range - offset * perpendicular_dy
             offset_northing_minus = northing_fit + offset * perpendicular_dx
 
-            # Plot the dashed perpendicular lines at the offset
-            ax.plot(offset_easting_plus, offset_northing_plus, 'r--')
-            ax.plot(offset_easting_minus, offset_northing_minus, 'r--')
+            # Update the dashed lines without recreating them
+            dashed_lines_upper[i].set_data(offset_easting_plus, offset_northing_plus)
+            dashed_lines_lower[i].set_data(offset_easting_minus, offset_northing_minus)
 
-            # Find points outside the offset lines
-            for idx in range(len(df_segment)):
-                point_easting = df_segment.iloc[idx]['Easting']
-                point_northing = df_segment.iloc[idx]['Northing']
-                predicted_northing = slope * point_easting + intercept
+            # Update the point colors dynamically
+            df_segment = df.iloc[i * points_per_segment:(i + 1) * points_per_segment]
+            easting_segment = df_segment['Easting'].values
+            northing_segment = df_segment['Northing'].values
 
-                # Calculate the offset lines at the point's easting
+            outlier_mask = []
+            for j in range(len(df_segment)):
+                predicted_northing = slope * easting_segment[j] + intercept
                 offset_upper = predicted_northing + offset * perpendicular_dx
                 offset_lower = predicted_northing - offset * perpendicular_dx
-
-                # Check if the point is outside the offset bounds
-                if point_northing > offset_upper or point_northing < offset_lower:
-                    # Plot the point in red with 'X' marker
-                    ax.scatter(point_easting, point_northing, color='red', marker='x', s=100)
+                if northing_segment[j] > offset_upper or northing_segment[j] < offset_lower:
+                    outlier_mask.append('red')
                 else:
-                    # Plot the point normally
-                    ax.scatter(point_easting, point_northing, color='blue', marker='o', s=50)
+                    outlier_mask.append('blue')
 
-            lines.append(line)
+            # Update scatter plot colors
+            scatter_points[i].set_color(outlier_mask)
 
-        # Set plot labels and title
-        ax.set_xlabel('Easting')
-        ax.set_ylabel('Northing')
-        ax.set_title(f'Best Fit Lines with Perpendicular Offsets ({points_per_segment} points each)')
-        # ax.legend()
-
-    # Plot the initial lines with no offset
-    plot_lines()
+    # Initialize plot with static elements
+    initialize_plot()
 
     # Add a slider to control the offset value
     ax_slider = plt.axes([0.2, 0.1, 0.6, 0.03])  # Position of the slider
@@ -90,9 +102,12 @@ def calculate_best_fit_by_points_with_slider(df, points_per_segment=300, offset=
     # Update the plot when the slider is moved
     def update(val):
         offset = slider.val
-        plot_lines(offset)
+        update_dashed_lines(offset)
         fig.canvas.draw_idle()  # Redraw the figure
 
     slider.on_changed(update)
 
     plt.show()
+
+# Example usage:
+# calculate_best_fit_by_points_with_slider(df, points_per_segment=300)

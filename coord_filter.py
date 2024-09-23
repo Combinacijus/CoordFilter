@@ -29,14 +29,32 @@ class GPSDataProcessor:
         self.outliers_dict = {}  # Dictionary to hold different types of outliers
 
     def load_gps_data(self):
+        expected_columns = ["Date", "Time", "Easting", "Northing"]
+
+        # Get the file paths for all .txt files in the data folder
         file_paths = glob.glob(os.path.join(self.data_folder, "*.txt"))
         print(f"Files loaded:\n{file_paths}")
 
         for file_path in file_paths:
-            df = pd.read_csv(file_path)
-            columns = df.columns.tolist()  # Save list of columns
-            self.gps_data_list.append((os.path.basename(file_path), df, columns))
+            # First try to load the file, assuming it has a header
+            df = pd.read_csv(file_path, header=0)
+            columns = df.columns.tolist()
 
+            # Check if the first row is actual data (should be numeric for Easting/Northing)
+            first_row_is_data = all(pd.api.types.is_numeric_dtype(df[col]) for col in columns if col in ["Easting", "Northing"])
+
+            if columns != expected_columns and first_row_is_data:
+                # If the header is actually the first line of data, reload assuming no header
+                print(f"Warning: First row appears to be data in {os.path.basename(file_path)}. Assuming default columns.")
+                df = pd.read_csv(file_path, header=None, names=expected_columns)
+            elif columns != expected_columns:
+                # If the columns don't match and it's not a missing header scenario, raise an error
+                raise ValueError(f"Unexpected header in file {os.path.basename(file_path)}: {columns}. " f"Expected columns: {expected_columns}")
+
+            # Save the columns and append the data to gps_data_list
+            self.gps_data_list.append((os.path.basename(file_path), df, expected_columns))
+
+            # Combine 'Date' and 'Time' columns into a datetime column
             df["Datetime"] = pd.to_datetime(df["Date"] + " " + df["Time"])
 
     def df_append_calc_vel(self, df):
@@ -304,8 +322,8 @@ class GPSDataProcessor:
             print(f"\nWorking on a file:   {filename}")
 
             self.process_data(df)
-            # self.calc_and_plot_outliers_vs_offset_graph()
-            self.visualize_data(filename)
+            self.calc_and_plot_outliers_vs_offset_graph()
+            # self.visualize_data(filename)
 
             # import segment_filter
             # points_per_segment=20

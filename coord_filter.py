@@ -17,11 +17,7 @@ class GPSDataProcessor:
         self.avg_vel = 0
         self.vel_cutoff = 0
         self.gps_data_list = []
-        self.zoom_ax_x = (None, None)
-        self.zoom_ax1_y = (None, None)
-        self.zoom_ax2_y = (None, None)
-        self.zoom_ax3_y = (None, None)
-        self.zoom_ax4_y = (None, None)
+        self.zoom_ax_x = None
 
         self.prefilter_avg_vel_mult = 5.0  # If vel is bigger or smaller by this value then delete in prefilter
 
@@ -31,10 +27,7 @@ class GPSDataProcessor:
         self.df_filtered = None
 
         self.outliers_dict = {}  # Dictionary to hold different types of outliers
-        # self.outliers_prefilter = None
-        # self.outliers_filter = None
 
-    # Load all GPS data files into a list of DataFrames and save list of columns
     def load_gps_data(self):
         file_paths = glob.glob(os.path.join(self.data_folder, "*.txt"))
         print(f"Files loaded:\n{file_paths}")
@@ -46,52 +39,94 @@ class GPSDataProcessor:
 
             df["Datetime"] = pd.to_datetime(df["Date"] + " " + df["Time"])
 
-    # Calculate velocity between consecutive points and average velocity over segment length
     def df_append_calc_vel(self, df):
-        df["Time_Diff"] = df["Datetime"].diff().dt.total_seconds()
-        df["Easting_Diff"] = df["Easting"].diff()
-        df["Northing_Diff"] = df["Northing"].diff()
-        df["Distance"] = np.sqrt(df["Easting_Diff"] ** 2 + df["Northing_Diff"] ** 2)
-        df["Velocity"] = df["Distance"] / df["Time_Diff"] * 1.94384  # Constant to convert m/s to knots
-        df["Avg_Velocity"] = df["Velocity"].rolling(window=self.avg_vel_segment_len).mean()
+        df.loc[:, "Time_Diff"] = df["Datetime"].diff().dt.total_seconds()
+        df.loc[:, "Easting_Diff"] = df["Easting"].diff()
+        df.loc[:, "Northing_Diff"] = df["Northing"].diff()
+        df.loc[:, "Distance"] = np.sqrt(df["Easting_Diff"] ** 2 + df["Northing_Diff"] ** 2)
+        df.loc[:, "Velocity"] = df["Distance"] / df["Time_Diff"] * 1.94384  # Convert m/s to knots
+        # df.loc[:, "Avg_Velocity"] = df["Velocity"].rolling(window=self.avg_vel_segment_len).mean()
 
         self.avg_vel = df["Velocity"].mean()
         self.vel_cutoff = self.avg_vel + self.vel_cutoff_offset
 
         return df
 
-    # Prefilter data based on the velocity threshold and return both filtered and outlier data
     def prefilter_data(self, df):
-        df = self.df_append_calc_vel(df)
+        if "Velocity" not in df.columns:
+            df = self.df_append_calc_vel(df)
 
         prefilter_vel_high_cutoff = self.avg_vel * self.prefilter_avg_vel_mult
         prefilter_vel_low_cutoff = self.avg_vel / self.prefilter_avg_vel_mult
 
-        outlier_mask = (df["Velocity"] > prefilter_vel_high_cutoff) & (df["Velocity"].shift(-1) > prefilter_vel_high_cutoff) | (df["Velocity"] < prefilter_vel_low_cutoff) & (
-            df["Velocity"].shift(-1) < prefilter_vel_low_cutoff
+        outlier_mask = ((df["Velocity"] > prefilter_vel_high_cutoff) & (df["Velocity"].shift(-1) > prefilter_vel_high_cutoff)) | (
+            (df["Velocity"] < prefilter_vel_low_cutoff) & (df["Velocity"].shift(-1) < prefilter_vel_low_cutoff)
         )
 
         df_prefiltered = df[~outlier_mask]
         df_outlier_prefilter = df[outlier_mask]
 
+        df_prefiltered = self.df_append_calc_vel(df_prefiltered)  # Recalculate velocities
+
         return df_prefiltered, df_outlier_prefilter
 
-    # Filter data based on the velocity threshold and combine outliers
     def filter_data(self, df):
-        # ----------- Prefilter -----------
-        self.df_prefiltered, self.outliers_dict["prefilter"] = self.prefilter_data(df.copy())
-        self.df_prefiltered = self.df_append_calc_vel(self.df_prefiltered)  # Recalculate velocities
-
-        # ----------- Filter -----------
         outlier_mask = (self.df_prefiltered["Velocity"] > self.vel_cutoff) & (self.df_prefiltered["Velocity"].shift(-1) > self.vel_cutoff)
         self.df_filtered = self.df_prefiltered[~outlier_mask]
         self.outliers_dict["filter"] = self.df_prefiltered[outlier_mask]
 
         return self.df_filtered, self.outliers_dict
 
-    # Calculate statistics like total distance, average velocity, max velocity, etc., and add number of points
+    def calc_and_plot_outliers_vs_offset_graph(self, min_offset=-2.5, max_offset=0, step=0.02):
+        offset_list = np.arange(min_offset, max_offset + step, step)
+        outlier_percentages = []
+        derivative_outlier_percentages = []
+        for offset in offset_list:
+            self.vel_cutoff = self.avg_vel + offset
+            df_filtered, outliers_dict = self.filter_data(self.df_prefiltered.copy())
+            points_count = len(df_filtered)
+            outlier_count = len(self.outliers_dict["filter"])
+            total_count = points_count + outlier_count
+            outlier_percentage = (outlier_count / total_count) * 100 if total_count > 0 else 0
+            outlier_percentages.append(outlier_percentage)
+
+        # Calculate derivative of outlier percentages
+        for i in range(1, len(outlier_percentages)):
+            derivative = (outlier_percentages[i] - outlier_percentages[i - 1]) / (offset_list[i] - offset_list[i - 1])
+            derivative_outlier_percentages.append(derivative)
+
+        # Plotting offset vs outlier percentage and its derivative on different subplots
+        fig, axs = plt.subplots(2, figsize=(10, 8), sharex=True)
+        axs[0].plot(offset_list, outlier_percentages, marker="o", color="b", label="Outlier Percentage")
+        axs[0].set_xlabel("Offset")
+        axs[0].set_ylabel("Outlier Percentage (%)")
+        axs[0].set_title("Offset vs Outlier Percentage")
+        axs[0].grid(True)
+        axs[0].legend()
+
+        axs[1].plot(offset_list[1:], derivative_outlier_percentages, marker="o", color="r", label="Derivative of Outlier Percentage")
+        axs[1].set_xlabel("Offset")
+        axs[1].set_ylabel("Derivative of Outlier Percentage")
+        axs[1].set_title("Offset vs Derivative of Outlier Percentage")
+        axs[1].grid(True)
+        axs[1].legend()
+
+        # Calculate top 20%, 10%, 5% values and mean
+        top_20_percent_value = np.percentile(outlier_percentages, 80)
+        top_10_percent_value = np.percentile(outlier_percentages, 90)
+        top_5_percent_value = np.percentile(outlier_percentages, 95)
+        mean_value = np.mean(outlier_percentages)
+
+        print(f"Top 20% Value: {top_20_percent_value}")
+        print(f"Top 10% Value: {top_10_percent_value}")
+        print(f"Top 5% Value: {top_5_percent_value}")
+        print(f"Mean Value: {mean_value}")
+
+        plt.tight_layout()
+        plt.show()
+
     def calculate_statistics(self, df):
-        if 'Velocity' not in df.columns:
+        if "Velocity" not in df.columns:
             df = self.df_append_calc_vel(df.copy())
 
         valid_velocities = df["Velocity"].dropna()
@@ -139,7 +174,13 @@ class GPSDataProcessor:
         for idx, (outlier_type, outlier_df) in enumerate(self.outliers_dict.items()):
             if not outlier_df.empty:
                 ax1.scatter(
-                    outlier_df["Easting"], outlier_df["Northing"], marker="x", color=colors_rgba[idx], s=sizes[idx], label=f"{outlier_type} Outliers ({len(outlier_df)} points)", zorder=10
+                    outlier_df["Easting"],
+                    outlier_df["Northing"],
+                    marker="x",
+                    color=colors_rgba[idx],
+                    s=sizes[idx],
+                    label=f"{outlier_type} Outliers ({len(outlier_df)} points)",
+                    zorder=10,
                 )
         ax1.set_title(f"Data - {filename}")
         ax1.set_xlabel("Easting")
@@ -152,7 +193,13 @@ class GPSDataProcessor:
         for idx, (outlier_type, outlier_df) in enumerate(self.outliers_dict.items()):
             if not outlier_df.empty:
                 ax2.scatter(
-                    outlier_df["Easting"], outlier_df["Velocity"], marker="x", color=colors_rgba[idx], s=sizes[idx], label=f"{outlier_type} Outliers ({len(outlier_df)} points)", zorder=10
+                    outlier_df["Easting"],
+                    outlier_df["Velocity"],
+                    marker="x",
+                    color=colors_rgba[idx],
+                    s=sizes[idx],
+                    label=f"{outlier_type} Outliers ({len(outlier_df)} points)",
+                    zorder=10,
                 )
 
         ax2.axhline(y=self.vel_cutoff, color="r", linestyle="--", label=f"Cutoff: {self.vel_cutoff:.2f} knots")
@@ -161,80 +208,90 @@ class GPSDataProcessor:
         ax2.set_xlabel("Time")
         ax2.set_ylabel("Velocity (knots)")
         ax2.legend()
-        # ------------ Auto Zoom (Works on slider move and matplotlib window zoom) ------------
 
+    def ax_auto_y_zoom(self, df_list, ax_data_list, ax_vel_list):
         def on_xlims_change(event_ax):
             x_min, x_max = event_ax.get_xlim()
-            if event_ax == ax1:
-                northing_filtered = df["Northing"][df["Easting"].between(x_min, x_max)]
-                if not northing_filtered.empty:
-                    northing_min = np.nanmin(northing_filtered)
-                    northing_max = np.nanmax(northing_filtered)
-                    ax1.set_ylim(northing_min, northing_max)
-            elif event_ax == ax2:
-                velocity_filtered = df["Velocity"][df["Easting"].between(x_min, x_max)]
-                if not velocity_filtered.empty:
-                    velocity_min = np.nanmin(velocity_filtered)
-                    velocity_max = np.nanmax(velocity_filtered)
-                    # Ensure y-limits are not identical to avoid singular transformation
-                    if velocity_min == velocity_max:
-                        velocity_min -= 1
-                        velocity_max += 1
-                    ax2.set_ylim(velocity_min, velocity_max)
 
-        ax1.callbacks.connect('xlim_changed', on_xlims_change)
-        ax2.callbacks.connect('xlim_changed', on_xlims_change)
+            for idx, ax in enumerate(ax_data_list):
+                if ax == event_ax:
+                    try:
+                        northing_min = np.nanmin(df_list[idx]["Northing"][df_list[idx]["Easting"].between(x_min, x_max)])
+                        northing_max = np.nanmax(df_list[idx]["Northing"][df_list[idx]["Easting"].between(x_min, x_max)])
+                    except ValueError:
+                        northing_min = np.nanmin(df_list[idx]["Northing"])
+                        northing_max = np.nanmax(df_list[idx]["Northing"])
+                    ax.set_ylim(northing_min, northing_max)
 
-        # Call on_xlims_change initially to set the y-limits based on the initial x-limits
-        on_xlims_change(ax1)
-        on_xlims_change(ax2)
+            for idx, ax in enumerate(ax_vel_list):
+                if ax == event_ax:
+                    try:
+                        velocity_min = np.nanmin(df_list[idx]["Velocity"][df_list[idx]["Easting"].between(x_min, x_max)])
+                        velocity_max = np.nanmax(df_list[idx]["Velocity"][df_list[idx]["Easting"].between(x_min, x_max)])
+                    except ValueError:
+                        velocity_min = 0
+                        velocity_max = self.avg_vel * 1.5
+                    ax.set_ylim(velocity_min, velocity_max)
+
+        for ax in ax_data_list + ax_vel_list:
+            ax.callbacks.connect("xlim_changed", on_xlims_change)
+
+        for ax in ax_data_list + ax_vel_list:
+            on_xlims_change(ax)
 
     def process_data(self, df):
         # ------------- Filtering -------------
         self.df_original = df.copy()
         self.df_original_vel = self.df_append_calc_vel(self.df_original.copy())
-        self.df_filtered, self.outliers_dict = self.filter_data(self.df_original.copy())
+        self.df_prefiltered, self.outliers_dict["prefilter"] = self.prefilter_data(self.df_original_vel)
+        self.df_filtered, self.outliers_dict = self.filter_data(self.df_prefiltered.copy())
 
         # ----------- Compare stats -----------
         stats_list = pd.DataFrame({"Original": self.calculate_statistics(self.df_original), "Prefiltered": self.calculate_statistics(self.df_prefiltered)})
         print(stats_list)
-        
+
     def visualize_data(self, filename):
-        # ------------- Visualization Plotting -------------
-        fig, (ax1, ax2, ax3, ax4) = plt.subplots(4, 1, figsize=(15, 8), sharex=True)
+        self.fig, ((self.ax1, self.ax2), (self.ax3, self.ax4)) = plt.subplots(2, 2, figsize=(15, 8), sharex=True, sharey="row")
+        self.ax_data_list = [self.ax1, self.ax2]
+        self.ax_vel_list = [self.ax3, self.ax4]
 
         def plot_all():
-            nonlocal ax1, ax2, ax3, ax4
-            self.plot_data_and_vel(self.df_original_vel, filename, "Original Data", ax1, ax2)
-            self.plot_data_and_vel(self.df_filtered, filename, "Filtered Data", ax3, ax4)
-            
-            if self.zoom_ax_x != (None, None):
-                ax1.set_xlim(self.zoom_ax_x)
-            
+            if not hasattr(self, "plotting_in_progress"):
+                self.plotting_in_progress = False
+
+            if self.plotting_in_progress is False:
+                self.plotting_in_progress = True
+
+                if len(self.ax1.lines) > 0:
+                    self.zoom_ax_x = self.ax1.get_xlim()
+
+                self.plot_data_and_vel(self.df_original_vel, filename, "Original Data", self.ax_data_list[0], self.ax_vel_list[0])
+                self.plot_data_and_vel(self.df_filtered, filename, "Filtered Data", self.ax_data_list[1], self.ax_vel_list[1])
+
+                # Restore zoom positions
+                if self.zoom_ax_x is not None:
+                    self.ax1.set_xlim(self.zoom_ax_x)
+
+                self.ax_auto_y_zoom([self.df_original_vel, self.df_filtered], self.ax_data_list, [])
+                # self.ax_auto_y_zoom([self.df_original_vel, self.df_filtered], [], self.ax_vel_list)
+
+                self.fig.canvas.draw_idle()
+
+                self.plotting_in_progress = False
+
         plot_all()
-
         # ------------- Slider -------------
-
-        ax_slider = plt.axes([0.2, 0.01, 0.6, 0.03])
-        slider = Slider(ax_slider, "Velocity Threshold", -10.0, 10.0, valinit=self.vel_cutoff_offset)
 
         # Store zoom levels and update plot
         def on_slider_update(val):
             self.vel_cutoff_offset = slider.val
             self.vel_cutoff = self.avg_vel + self.vel_cutoff_offset
-            df_filtered, _ = self.filter_data(self.df_original)
-
-            # Store zoom positions
-            self.zoom_ax_x = ax1.get_xlim()
-            self.zoom_ax1_y = ax1.get_ylim()
-            self.zoom_ax2_y = ax2.get_ylim()
-            self.zoom_ax3_y = ax3.get_ylim()
-            self.zoom_ax4_y = ax4.get_ylim()
+            self.df_filtered, self.outliers_dict = self.filter_data(self.df_prefiltered.copy())
 
             plot_all()
-            
-            fig.canvas.draw_idle()
 
+        ax_slider = plt.axes([0.2, 0.01, 0.6, 0.03])
+        slider = Slider(ax_slider, "Velocity Threshold", -10.0, 10.0, valinit=self.vel_cutoff_offset)
         slider.on_changed(on_slider_update)
 
         plt.show()
@@ -247,8 +304,8 @@ class GPSDataProcessor:
             print(f"\nWorking on a file:   {filename}")
 
             self.process_data(df)
+            # self.calc_and_plot_outliers_vs_offset_graph()
             self.visualize_data(filename)
-            
 
             # import segment_filter
             # points_per_segment=20
@@ -256,23 +313,21 @@ class GPSDataProcessor:
             # segment_filter.calculate_best_fit()  # Calculate the best-fit lines
             # segment_filter.plot_offset_vs_outlier_percentage(min_offset=0, max_offset=2, step=0.1)
             # segment_filter.plot()
-        
-        
+
             # TODO
             # self.save_data(df, self.path_out_debug, filename)
             # self.save_data(df, self.path_out_filtered, filename, columns)
 
-    
 
 if __name__ == "__main__":
     processor = GPSDataProcessor(data_folder="./data", output_folder="./data_filtered", avg_vel_segment_len=20, vel_cutoff_offset=1)
-    
-    import cProfile, pstats
-    profiler = cProfile.Profile()
-    profiler.enable()
-    
+
+    # import cProfile, pstats
+    # profiler = cProfile.Profile()
+    # profiler.enable()
+
     processor.process_files()
-    
-    profiler.disable()
-    stats = pstats.Stats(profiler).sort_stats('cumtime')
-    stats.print_stats(20)
+
+    # profiler.disable()
+    # stats = pstats.Stats(profiler).sort_stats('cumtime')
+    # stats.print_stats(20)

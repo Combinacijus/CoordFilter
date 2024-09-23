@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider
 import glob
 import os
+from sklearn.linear_model import LinearRegression
 
 
 class GPSDataProcessor:
@@ -16,13 +17,10 @@ class GPSDataProcessor:
         self.avg_vel = 0
         self.vel_cutoff = 0
         self.gps_data_list = []
-        self.zoom_ax1_x = (None, None)
+        self.zoom_ax_x = (None, None)
         self.zoom_ax1_y = (None, None)
-        self.zoom_ax2_x = (None, None)
         self.zoom_ax2_y = (None, None)
-        self.zoom_ax3_x = (None, None)
         self.zoom_ax3_y = (None, None)
-        self.zoom_ax4_x = (None, None)
         self.zoom_ax4_y = (None, None)
 
         self.prefilter_avg_vel_mult = 5.0  # If vel is bigger or smaller by this value then delete in prefilter
@@ -59,7 +57,7 @@ class GPSDataProcessor:
 
         self.avg_vel = df["Velocity"].mean()
         self.vel_cutoff = self.avg_vel + self.vel_cutoff_offset
-        
+
         return df
 
     # Prefilter data based on the velocity threshold and return both filtered and outlier data
@@ -94,7 +92,7 @@ class GPSDataProcessor:
     # Calculate statistics like total distance, average velocity, max velocity, etc., and add number of points
     def calculate_statistics(self, df):
         df = self.df_append_calc_vel(df.copy())
-        
+
         valid_velocities = df["Velocity"].dropna()
         valid_distances = df["Distance"].dropna()
         total_distance = valid_distances.sum()
@@ -127,14 +125,13 @@ class GPSDataProcessor:
             df.to_csv(output_path, index=False, float_format="%.4f")
 
     # Plot data: trajectory and velocity graph including cutoff line and number of filtered points
-    def plot_all(self, df_original, df_filtered, filename, ax1, ax2, ax3):
+    def plot_data_and_vel(self, df, filename, label, ax1, ax2):
         ax1.clear()
         ax2.clear()
-        ax3.clear()
 
-        # ------------ PLOT #1 Original Data with all Outliers ------------
-        ax1.plot(df_original["Easting"], df_original["Northing"], marker="o", linestyle="-", label="Original Data")
-        
+        # ------------ PLOT #1 Data with all Outliers ------------
+        ax1.plot(df["Easting"], df["Northing"], marker="o", linestyle="-", label=label)
+
         sizes = [30, 20, 10]
         colors_rgba = [(1, 0, 0, 1), (1, 0.5, 0, 1), (1, 1, 0, 1), (0, 0, 0, 1)]  # RGBA
         for idx, (outlier_type, outlier_df) in enumerate(self.outliers_dict.items()):
@@ -146,9 +143,9 @@ class GPSDataProcessor:
         ax1.set_xlabel("Easting")
         ax1.set_ylabel("Northing")
         ax1.legend()
-        
-        # ------------ PLOT #2 Original Data Velocity with all Outliers ------------
-        ax2.plot(df_original["Easting"], df_original["Velocity"], "b-", label="Velocity")
+
+        # ------------ PLOT #2 Data Velocity with all Outliers ------------
+        ax2.plot(df["Easting"], df["Velocity"], "b-", label="Velocity")
 
         for idx, (outlier_type, outlier_df) in enumerate(self.outliers_dict.items()):
             if not outlier_df.empty:
@@ -163,62 +160,54 @@ class GPSDataProcessor:
         ax2.set_ylabel("Velocity (knots)")
         ax2.legend()
         
-        
-        # ------------ PLOT #3 Filtered Data ------------
-        ax3.plot(df_filtered["Easting"], df_filtered["Northing"], marker="o", linestyle="-", label="Filtered Data")
-        
-        sizes = [30, 20, 10]
-        colors_rgba = [(1, 0, 0, 1), (1, 0.5, 0, 1), (1, 1, 0, 1), (0, 0, 0, 1)]  # RGBA
-        for idx, (outlier_type, outlier_df) in enumerate(self.outliers_dict.items()):
-            if not outlier_df.empty:
-                ax3.scatter(
-                    outlier_df["Easting"], outlier_df["Northing"], color=colors_rgba[idx], s=sizes[idx], label=f"{outlier_type} Outliers ({len(outlier_df)} points)", zorder=10
-                )
-        ax3.set_title(f"Data - {filename}")
-        ax3.set_xlabel("Easting")
-        ax3.set_ylabel("Northing")
-        ax3.legend()
+        # ------------ Auto Zoom (Works on slider move and matplotlib window zoom) ------------
 
-        
-        # ------------ Plot settings ------------
+        def on_xlims_change(event_ax):
+            x_min, x_max = event_ax.get_xlim()
+            if event_ax == ax1:
+                northing_min = np.nanmin(df["Northing"][df["Easting"].between(x_min, x_max)])
+                northing_max = np.nanmax(df["Northing"][df["Easting"].between(x_min, x_max)])
+                ax1.set_ylim(northing_min, northing_max)
+            elif event_ax == ax2:
+                velocity_min = np.nanmin(df["Velocity"][df["Easting"].between(x_min, x_max)])
+                velocity_max = np.nanmax(df["Velocity"][df["Easting"].between(x_min, x_max)])
+                ax2.set_ylim(velocity_min, velocity_max)
 
-        # plt.tight_layout()
+        ax1.callbacks.connect('xlim_changed', on_xlims_change)
+        ax2.callbacks.connect('xlim_changed', on_xlims_change)
 
-        # Restore zoom
-        if self.zoom_ax1_x != (None, None):
-            ax1.set_xlim(self.zoom_ax1_x)
-        if self.zoom_ax1_y != (None, None):
-            ax1.set_ylim(self.zoom_ax1_y)
-        if self.zoom_ax2_x != (None, None):
-            ax2.set_xlim(self.zoom_ax2_x)
-        if self.zoom_ax2_y != (None, None):
-            ax2.set_ylim(self.zoom_ax2_y)
-        if self.zoom_ax3_x != (None, None):
-            ax3.set_xlim(self.zoom_ax3_x)
-        if self.zoom_ax3_y != (None, None):
-            ax3.set_ylim(self.zoom_ax3_y)
+        # Call on_xlims_change initially to set the y-limits based on the initial x-limits
+        on_xlims_change(ax1)
+        on_xlims_change(ax2)
 
-    def process_data_file(self, df, filename):
+    def process_data(self, df):
         # ------------- Filtering -------------
         self.df_original = df.copy()
         self.df_filtered, self.outliers_dict = self.filter_data(self.df_original.copy())
 
         # ----------- Compare stats -----------
-        stats_list = pd.DataFrame(
-            {"Original": self.calculate_statistics(self.df_original), "Prefiltered": self.calculate_statistics(self.df_prefiltered)}
-        )
+        stats_list = pd.DataFrame({"Original": self.calculate_statistics(self.df_original), "Prefiltered": self.calculate_statistics(self.df_prefiltered)})
         print(stats_list)
-
+        
+    def visualize_data(self, filename):
         # ------------- Visualization Plotting -------------
+        fig, (ax1, ax2, ax3, ax4) = plt.subplots(4, 1, figsize=(15, 8), sharex=True)
 
-        fig, ((ax1, ax2, ax3)) = plt.subplots(3, 1, figsize=(15, 8), sharex=True)
-        self.plot_all(self.df_append_calc_vel(self.df_original), self.df_filtered, filename, ax1, ax2, ax3)
+        def plot_all():
+            nonlocal ax1, ax2, ax3, ax4
+            self.plot_data_and_vel(self.df_append_calc_vel(self.df_original), filename, "Original Data", ax1, ax2)
+            self.plot_data_and_vel(self.df_filtered, filename, "Filtered Data", ax3, ax4)
+            
+            if self.zoom_ax_x != (None, None):
+                ax1.set_xlim(self.zoom_ax_x)
+            
+        plot_all()
 
         # ------------- Slider -------------
-        
+
         ax_slider = plt.axes([0.2, 0.01, 0.6, 0.03])
         slider = Slider(ax_slider, "Velocity Threshold", -10.0, 10.0, valinit=self.vel_cutoff_offset)
-        
+
         # Store zoom levels and update plot
         def on_slider_update(val):
             self.vel_cutoff_offset = slider.val
@@ -226,19 +215,46 @@ class GPSDataProcessor:
             df_filtered, _ = self.filter_data(df)
 
             # Store zoom positions
-            self.zoom_ax1_x = ax1.get_xlim()
+            self.zoom_ax_x = ax1.get_xlim()
             self.zoom_ax1_y = ax1.get_ylim()
-            self.zoom_ax2_x = ax2.get_xlim()
             self.zoom_ax2_y = ax2.get_ylim()
-            self.zoom_ax3_x = ax3.get_xlim()
             self.zoom_ax3_y = ax3.get_ylim()
+            self.zoom_ax4_y = ax4.get_ylim()
 
-            self.plot_all(self.df_append_calc_vel(self.df_original), self.df_filtered, filename, ax1, ax2, ax3)
+            plot_all()
+            
             fig.canvas.draw_idle()
 
         slider.on_changed(on_slider_update)
-        
+
         plt.show()
+
+    def calculate_best_fit(self, df):
+        total_points = len(df)
+        cut_off = int(total_points * 0.1)  # 10% cutoff
+        df_trimmed = df.iloc[cut_off:total_points - cut_off]
+
+        easting = df_trimmed['Easting'].values.reshape(-1, 1)  # Reshaped for sklearn
+        northing = df_trimmed['Northing'].values
+
+        reg = LinearRegression().fit(easting, northing)
+        slope = reg.coef_[0]
+        intercept = reg.intercept_
+
+        plt.scatter(easting, northing, label="Trimmed Data Points", color="blue")
+        
+        easting_range = np.linspace(easting.min(), easting.max(), 100)
+        northing_fit = slope * easting_range + intercept
+        plt.plot(easting_range, northing_fit, label=f"Best Fit: y = {slope:.4f}x + {intercept:.4f}", color="red")
+
+        plt.xlabel('Easting')
+        plt.ylabel('Northing')
+        plt.title('Best Fit Line for Northing vs Easting')
+        plt.legend()
+        plt.show()
+
+        return slope, intercept
+
 
     # Main processing loop for all files
     def process_files(self):
@@ -247,12 +263,21 @@ class GPSDataProcessor:
         for filename, df, columns in self.gps_data_list:
             print(f"\nWorking on a file:   {filename}")
 
-            self.process_data_file(df, filename)
+            self.process_data(df)
+            self.visualize_data(filename)
+            
+            
+            slope, intercept = self.calculate_best_fit(self.df_filtered)
+            print(f"Slope: {slope}")
+            print(f"Intercept: {intercept}")
+            
+            
 
             # TODO
             # self.save_data(df, self.path_out_debug, filename)
             # self.save_data(df, self.path_out_filtered, filename, columns)
 
+    
 
 # Run the processing
 if __name__ == "__main__":

@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider
 import glob
 import os
-from sklearn.linear_model import LinearRegression
+from segment_filter import SegmentFilter
 
 
 class GPSDataProcessor:
@@ -238,20 +238,22 @@ class GPSDataProcessor:
             print(f"\nWorking on a file:   {filename}")
 
             self.process_data(df)
-            # self.visualize_data(filename)
+            self.visualize_data(filename)
             
+
+            # Example of use
+            # df = rotate_coordinates(df, 90)
+
+
+            # points_per_segment=20
             
-            import SegmentFilter
-            SegmentFilter.calculate_best_fit_by_points_with_slider(df[:100], points_per_segment=20)
-            
-                   
-            # heading = np.degrees(np.arctan(slope))
-            # print(f"Slope: {slope}")
-            # print(f"Intercept: {intercept}")
-            # print(f"Heading (deg): {heading}")
-            
-            
-            
+            # import segment_filter
+            # segment_filter = SegmentFilter(df, points_per_segment=20)
+            # segment_filter.calculate_best_fit()  # Calculate the best-fit lines
+            # segment_filter.plot_offset_vs_outlier_percentage(min_offset=0, max_offset=2, step=0.1)
+            # segment_filter.plot()
+        
+
 
             # TODO
             # self.save_data(df, self.path_out_debug, filename)

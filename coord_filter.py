@@ -5,21 +5,30 @@ from matplotlib.widgets import Slider
 import glob
 import os
 from segment_filter import SegmentFilter
+from binary_search import binary_search
 
 
 class GPSDataProcessor:
-    def __init__(self, data_folder, output_folder, avg_vel_segment_len, vel_cutoff_offset):
+    def __init__(self, data_folder, output_folder, avg_vel_segment_len):
+        # Filter parameters
+        self.prefilter_avg_vel_mult = 5.0  # If vel is bigger or smaller by this multiplier then delete in prefilter
+        self.default_vel_filter_cutoff_percentage = 1.0  # Filter out this percentage of velocity outliers
+        self.vel_filter_step = 0.001  # While using search what's the smallest step in vel offset
+        self.vel_filter_min_vel_offset = -50
+        self.vel_filter_max_vel_offset = 50
+        self.segment_filter_points_per_segment = 20
+
+        # Parameters
         self.data_folder = data_folder
         self.path_out_filtered = output_folder
         self.path_out_debug = output_folder + "_debug"
         self.avg_vel_segment_len = avg_vel_segment_len
-        self.vel_cutoff_offset = vel_cutoff_offset
+        self.vel_cutoff_offset = None
+        self.vel_cutoff_percentage = self.default_vel_filter_cutoff_percentage
         self.avg_vel = 0
         self.vel_cutoff = 0
         self.gps_data_list = []
         self.zoom_ax_x = None
-
-        self.prefilter_avg_vel_mult = 5.0  # If vel is bigger or smaller by this value then delete in prefilter
 
         self.df_original = None
         self.df_original_vel = None
@@ -51,6 +60,8 @@ class GPSDataProcessor:
                 # If the columns don't match and it's not a missing header scenario, raise an error
                 raise ValueError(f"Unexpected header in file {os.path.basename(file_path)}: {columns}. " f"Expected columns: {expected_columns}")
 
+            df.dropna(inplace=True) #  Drop rows with any missing values in any column
+
             # Save the columns and append the data to gps_data_list
             self.gps_data_list.append((os.path.basename(file_path), df, expected_columns))
 
@@ -66,7 +77,6 @@ class GPSDataProcessor:
         # df.loc[:, "Avg_Velocity"] = df["Velocity"].rolling(window=self.avg_vel_segment_len).mean()
 
         self.avg_vel = df["Velocity"].mean()
-        self.vel_cutoff = self.avg_vel + self.vel_cutoff_offset
 
         return df
 
@@ -88,24 +98,69 @@ class GPSDataProcessor:
 
         return df_prefiltered, df_outlier_prefilter
 
-    def filter_data(self, df):
-        outlier_mask = (self.df_prefiltered["Velocity"] > self.vel_cutoff) & (self.df_prefiltered["Velocity"].shift(-1) > self.vel_cutoff)
-        self.df_filtered = self.df_prefiltered[~outlier_mask]
-        self.outliers_dict["filter"] = self.df_prefiltered[outlier_mask]
+    def apply_velocity_filter(self, df, *, cutoff_percentage=None, cutoff_vel_offset=None):
+        self.vel_cutoff = self.update_vel_cutoff(cutoff_percentage=cutoff_percentage, cutoff_offset=cutoff_vel_offset)
+
+        outlier_mask = (df["Velocity"] > self.vel_cutoff) & (df["Velocity"].shift(-1) > self.vel_cutoff)
+        self.df_filtered = df[~outlier_mask]
+        self.outliers_dict["filter"] = df[outlier_mask]
 
         return self.df_filtered, self.outliers_dict
 
-    def calc_and_plot_outliers_vs_offset_graph(self, min_offset=-3, max_offset=-1.0, step=0.02):
-        offset_list = np.arange(min_offset, max_offset + step, step)
+    def get_vel_outlier_percentage(self, offset):
+        df_filtered, outliers_dict = self.apply_velocity_filter(self.df_prefiltered.copy(), cutoff_vel_offset=offset)
+
+        outlier_count = len(outliers_dict["filter"])
+        total_count = len(df_filtered) + outlier_count
+        outlier_percentage = (outlier_count / total_count) * 100 if total_count > 0 else 0
+
+        if total_count < 0:
+            raise Exception("Error: No Data")
+
+        return outlier_percentage
+
+    def binary_search_vel_filter_offset(self, target_percentage):
+        vel_offset = binary_search(self.vel_filter_min_vel_offset, self.vel_filter_max_vel_offset, self.get_vel_outlier_percentage, target_percentage, self.vel_filter_step, False)
+        return vel_offset
+
+    def calc_and_plot_outliers_vs_offset_graph(self, step=0.01):
         outlier_percentages = []
         derivative_outlier_percentages = []
-        
-        # Calculate outlier percentages
+
+        def get_auto_range(target_percentage):
+            target_percentage1 = target_percentage
+            target_percentage2 = 100 - target_percentage
+
+            # Automatically find min and max offset to plot
+            offset_low = self.binary_search_vel_filter_offset(target_percentage1)
+            offset_mid = self.binary_search_vel_filter_offset(50)
+            offset_high = self.binary_search_vel_filter_offset(target_percentage2)
+
+            distance_to_min = abs(offset_mid - offset_low)
+            distance_to_max = abs(offset_mid - offset_high)
+            offset_low = offset_mid - min(distance_to_min, distance_to_max)
+            offset_high = offset_mid + min(distance_to_min, distance_to_max)
+
+            if self.get_vel_outlier_percentage(offset_low) > self.get_vel_outlier_percentage(offset_high):
+                offset_low, offset_high = offset_high, offset_low
+
+            print()
+            print(f"f({offset_low}) = {self.get_vel_outlier_percentage(offset_low)} -> ({target_percentage1} targeted)")
+            print(f"f({offset_mid}) = {self.get_vel_outlier_percentage(offset_mid)} -> ({50} targeted)")
+            print(f"f({offset_high}) = {self.get_vel_outlier_percentage(offset_high)} -> ({target_percentage2} targeted)")
+
+            offset_min = min(offset_low, offset_high)
+            offset_max = max(offset_low, offset_high)
+
+            return np.arange(offset_min, offset_max + step, step)
+
+        offset_list = get_auto_range(target_percentage=0.5)
+
+        # Calculate velocity outlier percentages
         for offset in offset_list:
-            self.vel_cutoff = self.avg_vel + offset
-            df_filtered, outliers_dict = self.filter_data(self.df_prefiltered.copy())
+            df_filtered, outliers_dict = self.apply_velocity_filter(self.df_prefiltered.copy(), cutoff_vel_offset=offset)
             points_count = len(df_filtered)
-            outlier_count = len(self.outliers_dict["filter"])
+            outlier_count = len(outliers_dict["filter"])
             total_count = points_count + outlier_count
             outlier_percentage = (outlier_count / total_count) * 100 if total_count > 0 else 0
             outlier_percentages.append(outlier_percentage)
@@ -117,6 +172,8 @@ class GPSDataProcessor:
 
         # Plotting offset vs outlier percentage and its derivative
         fig, axs = plt.subplots(2, figsize=(10, 8), sharex=True)
+
+        # Plot outlier percentages
         axs[0].plot(offset_list, outlier_percentages, marker="o", color="b", label="Outlier Percentage")
         axs[0].set_xlabel("Offset")
         axs[0].set_ylabel("Outlier Percentage (%)")
@@ -124,51 +181,57 @@ class GPSDataProcessor:
         axs[0].grid(True)
         axs[0].legend()
 
+        # Plot derivative of outlier percentages
         axs[1].plot(offset_list[1:], derivative_outlier_percentages, marker="o", color="g", label="Derivative of Outlier Percentage")
         axs[1].set_xlabel("Offset")
         axs[1].set_ylabel("Derivative of Outlier Percentage")
         axs[1].set_title("Offset vs Derivative of Outlier Percentage")
         axs[1].grid(True)
         axs[1].legend()
-        
+
         # Add slider for target percentage
         ax_slider = plt.axes([0.2, 0.01, 0.6, 0.03])
-        slider = Slider(ax_slider, "Target Percentage", 0.0, 100.0, valinit=2.0)
+        slider = Slider(ax_slider, "Velocity Filter Percentage", 0.0, 5.0, valinit=self.vel_cutoff_percentage)
 
         # Initialize horizontal and vertical lines as None
-        hline_target = None
-        vline_target_0 = None
-        hline_derivative_0 = None
-        vline_target_1 = None
+        line_h1 = None
+        line_v1 = None
+        line_h2 = None
+        line_v2 = None
 
-        def update_plot(val):
-            nonlocal hline_target, vline_target_0, hline_derivative_0, vline_target_1
+        def update_plot(target_percentage):
+            nonlocal line_h1, line_v1, line_h2, line_v2
 
-            target_percentage = slider.val
-            offset_at_target_percentage = offset_list[np.abs(np.array(outlier_percentages) - target_percentage).argmin()]
+            line_h_posx = offset_list[np.abs(np.array(outlier_percentages) - target_percentage).argmin()]
+            line_v2_posy = np.interp(line_h_posx, offset_list[1:], derivative_outlier_percentages)
 
             # If the lines exist, remove them first
-            if hline_target is not None:
-                hline_target.remove()
-            if vline_target_0 is not None:
-                vline_target_0.remove()
-            if hline_derivative_0 is not None:
-                hline_derivative_0.remove()
-            if vline_target_1 is not None:
-                vline_target_1.remove()
+            if line_h1 is not None:
+                line_h1.remove()
+            if line_v1 is not None:
+                line_v1.remove()
+            if line_h2 is not None:
+                line_h2.remove()
+            if line_v2 is not None:
+                line_v2.remove()
 
             # Redraw horizontal and vertical lines at new slider values
-            hline_target = axs[0].axhline(y=target_percentage, color='r', linestyle='--')
-            vline_target_0 = axs[0].axvline(x=offset_at_target_percentage, color='r', linestyle='--')
-            hline_derivative_0 = axs[1].axhline(y=0, color='r', linestyle='--')
-            vline_target_1 = axs[1].axvline(x=offset_at_target_percentage, color='r', linestyle='--')
+            line_h1 = axs[0].axhline(y=target_percentage, color="r", linestyle="--")
+            line_v1 = axs[0].axvline(x=line_h_posx, color="r", linestyle="--")
+            line_h2 = axs[1].axhline(y=line_v2_posy, color="r", linestyle="--")
+            line_v2 = axs[1].axvline(x=line_h_posx, color="r", linestyle="--")
 
             fig.canvas.draw_idle()
 
-        slider.on_changed(update_plot)
+        def on_slider_update(slider_val):
+            self.vel_cutoff = self.update_vel_cutoff(cutoff_percentage=slider_val)
+            update_plot(slider_val)
 
+        slider.on_changed(on_slider_update)
+        update_plot(slider.val)
+
+        fig.suptitle("Speed offset and Filtered Out Outlier Percentage Analysis")
         plt.show()
-
 
     def calculate_statistics(self, df):
         if "Velocity" not in df.columns:
@@ -210,11 +273,13 @@ class GPSDataProcessor:
     def plot_data_and_vel(self, df, filename, label, ax1, ax2):
         ax1.clear()
         ax2.clear()
+        # ax1.lines.remove()
+        # ax2.lines.remove()
 
         # ------------ PLOT #1 Data with all Outliers ------------
         ax1.plot(df["Easting"], df["Northing"], marker="o", linestyle="-", label=f"{label} (Total Points: {len(df)})")
 
-        sizes = [30, 20, 10]
+        sizes = [8, 7, 6]
         colors_rgba = [(1, 0, 0, 1), (1, 0.5, 0, 1), (1, 1, 0, 1), (0, 0, 0, 1)]  # RGBA
         for idx, (outlier_type, outlier_df) in enumerate(self.outliers_dict.items()):
             if not outlier_df.empty:
@@ -248,7 +313,7 @@ class GPSDataProcessor:
                 )
 
         ax2.axhline(y=self.vel_cutoff, color="r", linestyle="--", label=f"Cutoff: {self.vel_cutoff:.2f} knots")
-        ax2.axhline(y=self.avg_vel, color="k", linestyle=":", label=f"Avg Velocity: {self.avg_vel:.2f} knots", alpha=0.7)
+        ax2.axhline(y=self.avg_vel, color="k", linestyle=":", label=f"Avg Velocity: {self.avg_vel:.2f} knots")
         ax2.set_title(f"Velocity - {filename}")
         ax2.set_xlabel("Time")
         ax2.set_ylabel("Velocity (knots)")
@@ -285,15 +350,34 @@ class GPSDataProcessor:
             on_xlims_change(ax)
 
     def process_data(self, df):
-        # ------------- Filtering -------------
+        # ------------- Initial Filtering -------------
         self.df_original = df.copy()
         self.df_original_vel = self.df_append_calc_vel(self.df_original.copy())
         self.df_prefiltered, self.outliers_dict["prefilter"] = self.prefilter_data(self.df_original_vel)
-        self.df_filtered, self.outliers_dict = self.filter_data(self.df_prefiltered.copy())
-
+        self.df_filtered, self.outliers_dict = self.apply_velocity_filter(self.df_prefiltered.copy(), cutoff_percentage=self.default_vel_filter_cutoff_percentage)
         # ----------- Compare stats -----------
-        stats_list = pd.DataFrame({"Original": self.calculate_statistics(self.df_original), "Prefiltered": self.calculate_statistics(self.df_prefiltered)})
-        print(stats_list)
+        # stats_list = pd.DataFrame(
+        #     {
+        #         "Original": self.calculate_statistics(self.df_original),
+        #         "Prefiltered": self.calculate_statistics(self.df_prefiltered),
+        #         "Filtered": self.calculate_statistics(self.df_filtered),
+        #     }
+        # )
+        # print(stats_list)
+
+    def update_vel_cutoff(self, *, cutoff_percentage=None, cutoff_offset=None):
+        if cutoff_percentage is not None and cutoff_offset is not None:
+            raise ValueError("Only one of cutoff_percentage or cutoff_vel_offset should be defined.")
+
+        if cutoff_percentage is not None:
+            self.vel_cutoff_percentage = cutoff_percentage
+            self.vel_cutoff_offset = self.binary_search_vel_filter_offset(cutoff_percentage)
+        elif cutoff_offset is not None:
+            self.vel_cutoff_offset = cutoff_offset
+
+        self.vel_cutoff = self.avg_vel + self.vel_cutoff_offset
+
+        return self.vel_cutoff
 
     def visualize_data(self, filename):
         self.fig, ((self.ax1, self.ax2), (self.ax3, self.ax4)) = plt.subplots(2, 2, figsize=(15, 8), sharex=True, sharey="row")
@@ -325,18 +409,14 @@ class GPSDataProcessor:
                 self.plotting_in_progress = False
 
         plot_all()
-        # ------------- Slider -------------
 
-        # Store zoom levels and update plot
+        # ------------- Slider Visualize -------------
         def on_slider_update(val):
-            self.vel_cutoff_offset = slider.val
-            self.vel_cutoff = self.avg_vel + self.vel_cutoff_offset
-            self.df_filtered, self.outliers_dict = self.filter_data(self.df_prefiltered.copy())
-
+            self.df_filtered, self.outliers_dict = self.apply_velocity_filter(self.df_prefiltered.copy(), cutoff_percentage=val)
             plot_all()
 
         ax_slider = plt.axes([0.2, 0.01, 0.6, 0.03])
-        slider = Slider(ax_slider, "Velocity Threshold", -10.0, 10.0, valinit=self.vel_cutoff_offset)
+        slider = Slider(ax_slider, "Velocity Filter Percentage", 0.0, 5.0, valinit=self.vel_cutoff_percentage)
         slider.on_changed(on_slider_update)
 
         plt.show()
@@ -350,14 +430,21 @@ class GPSDataProcessor:
 
             self.process_data(df)
             self.calc_and_plot_outliers_vs_offset_graph()
-            # self.visualize_data(filename)
+            self.visualize_data(filename)
 
-            # import segment_filter
-            # points_per_segment=20
-            # segment_filter = SegmentFilter(df, points_per_segment=points_per_segment)
-            # segment_filter.calculate_best_fit()  # Calculate the best-fit lines
+            import segment_filter
+            segment_filter = SegmentFilter(df, self.segment_filter_points_per_segment)
+            segment_filter.calculate_best_fit()
+            
+            # TODO Both won't work at the same time
             # segment_filter.plot_offset_vs_outlier_percentage(min_offset=0, max_offset=2, step=0.1)
-            # segment_filter.plot()
+            segment_filter.plot()
+            
+            # TODO 
+            # 1. plot_offset_vs_outlier_percentage() and segment_filter.plot() does not work if both uncommented
+            # 2. Make segment_filter to choose by what percentage to filter out and by min distance whichever keeps more
+            #    Use as example binary_search_vel_filter_offset() and get_auto_range()
+            # 3. Put every filter in pipeline to automatically filter and save everything (make option to skip GUI)
 
             # TODO
             # self.save_data(df, self.path_out_debug, filename)
@@ -365,7 +452,7 @@ class GPSDataProcessor:
 
 
 if __name__ == "__main__":
-    processor = GPSDataProcessor(data_folder="./data", output_folder="./data_filtered", avg_vel_segment_len=20, vel_cutoff_offset=1)
+    processor = GPSDataProcessor(data_folder="./data", output_folder="./data_filtered", avg_vel_segment_len=20)
 
     # import cProfile, pstats
     # profiler = cProfile.Profile()

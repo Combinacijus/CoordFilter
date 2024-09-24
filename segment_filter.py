@@ -80,7 +80,6 @@ class SegmentFilter:
 
         total_points = total_inliers + total_outliers
         return (total_outliers / total_points) * 100 if total_points > 0 else 0
-
     def plot_offset_vs_outlier_percentage(self, min_offset=0, max_offset=10, step=0.1):
         offsets = np.arange(min_offset, max_offset + step, step)
         outlier_percentages = []
@@ -99,20 +98,22 @@ class SegmentFilter:
         plt.show()
         
     def initialize_plot(self):
+        colors = plt.cm.get_cmap('tab10')  # Get a colormap with unique colors for each segment
         for i in range(self.num_segments):
             # Plot the line of best fit for the segment
             slope, intercept, easting_range, northing_fit = self.lines[i]
-            self.ax.plot(easting_range, northing_fit, color='blue')
+            color = colors(i % 10)
+            self.ax.plot(easting_range, northing_fit, color=color, zorder=20)
 
             # Initialize empty dashed lines and points (to be updated dynamically)
-            dashed_upper, = self.ax.plot([], [], 'r--', alpha=0.4)
-            dashed_lower, = self.ax.plot([], [], 'r--', alpha=0.4)
+            dashed_upper, = self.ax.plot([], [], '--', alpha=1, color=color)
+            dashed_lower, = self.ax.plot([], [], '--', alpha=1, color=color)
             self.dashed_lines_upper.append(dashed_upper)
             self.dashed_lines_lower.append(dashed_lower)
 
             # Plot the initial points and initialize empty scatter plots for inliers and outliers
-            scatter_inliers = self.ax.scatter([], [], c='blue', alpha=0.6)
-            scatter_outliers = self.ax.scatter([], [], c='red', marker='o')
+            scatter_inliers = self.ax.scatter([], [], color=color, alpha=1, s=10)
+            scatter_outliers = self.ax.scatter([], [], color='r', alpha=1, marker='x', s=50)
             self.scatter_points_inliers.append(scatter_inliers)
             self.scatter_points_outliers.append(scatter_outliers)
 
@@ -162,6 +163,10 @@ class SegmentFilter:
             self.scatter_points_inliers[i].set_offsets(np.c_[inliers_easting, inliers_northing])
             self.scatter_points_outliers[i].set_offsets(np.c_[outliers_easting, outliers_northing])
 
+        # Plot dashed lines on top
+        for line in self.dashed_lines_upper + self.dashed_lines_lower:
+            line.set_zorder(10)
+
     def update_text_elements(self):
         total_inliers = 0
         total_outliers = 0
@@ -186,23 +191,21 @@ class SegmentFilter:
         self.text_outliers_percentage = self.ax.text(0.05, 0.85, f"Percentage of Outliers: {total_outliers / (total_inliers + total_outliers) * 100:.2f}%", transform=self.ax.transAxes, color='blue')
 
     def plot(self):
-        # Initialize plot with static elements
         self.initialize_plot()
-
-        # Add a slider to control the offset value
-        ax_slider = plt.axes([0.2, 0.1, 0.6, 0.03])  # Position of the slider
-        slider = Slider(ax_slider, 'Offset (m)', 0, 10.0, valinit=self.offset, valstep=0.01)
-
-        # Update the plot when the slider is moved
-        def update(val):
-            self.offset = slider.val
+        
+        def update_plot(val):
+            self.offset = val
             self.update_dashed_lines()
             self.update_text_elements()
-            plt.draw()  # Redraw the figure
+            plt.draw()
+            
 
-        slider.on_changed(update)
+        # Slider
+        ax_slider = plt.axes([0.2, 0.1, 0.6, 0.03])
+        slider = Slider(ax_slider, 'Offset (m)', 0, 10.0, valinit=self.offset, valstep=0.01)
+        slider.on_changed(update_plot)
+        update_plot(slider.val)
 
-        # Show the plot
         plt.show()
 
 # Example usage:
